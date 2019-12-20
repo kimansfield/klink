@@ -14,10 +14,78 @@
 #include <netdb.h>
 
 #define MYPORT "4950"    // the port users will be connecting to
+#define SERVERPORT 4950
 
 #define MYTALKPORT "5932"
 
 #define MAXBUFLEN 100
+
+#define NUMIPS 16
+#define LENGTHIPS 16
+
+char registeredIP[NUMIPS][LENGTHIPS];
+
+void initregs(void)
+{
+   int i;
+
+   for (i=0; i<NUMIPS; i++)
+   {
+      registeredIP[i][0] = 0;
+   }
+
+}
+
+void rmregs(char *ip)
+{
+   int i;
+   int done = 0;
+
+   while (!done)
+   {
+      if (!strcmp(registeredIP[i],ip))
+      {
+         registeredIP[i][0] = 0;
+         done = 1;
+      }
+      i++;
+      if (i >= NUMIPS)
+         done = 1;
+   }
+}
+
+void regs(char *ip)
+{
+   int i;
+   int done = 0;
+   char tip[NUMIPS];
+
+   sprintf(tip,"%d.%d.%d.%d",ip[0],ip[1],ip[2],ip[3]);
+   printf("register IP = %s\n",tip);
+   i = 0;
+   while (!done)
+   {
+      if (registeredIP[i][0] == 0)
+      {
+         strcpy(registeredIP[i],tip);
+         done = 1;
+      }
+      else
+      if (!strcmp(registeredIP[i],tip))
+      {
+         done = 1;
+      }
+      if (i >= NUMIPS)
+         done = 1;
+
+      i++;
+   }
+   //for (i=0; i<NUMIPS; i++)
+   //{
+   //   printf("Value %d = %s\n",i,registeredIP[i]);
+   //}
+   return ;
+}
 
 // get sockaddr, IPv4 or IPv6:
 void *get_in_addr(struct sockaddr *sa)
@@ -27,6 +95,56 @@ void *get_in_addr(struct sockaddr *sa)
    }
 
    return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
+
+int broadcast(char *ip, char *message)
+{
+    int sockfd;
+    struct sockaddr_in their_addr; // connector's address information
+    struct hostent *he;
+    int numbytes;
+    int broadcast = 1;
+    //char broadcast = '1'; // if that doesn't work, try this
+
+    //if (argc != 3) {
+    //    fprintf(stderr,"usage: broadcaster hostname message\n");
+    //    exit(1);
+    //}
+
+    if ((he=gethostbyname(ip)) == NULL) {  // get the host info
+        perror("gethostbyname");
+        exit(1);
+    }
+
+    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+        perror("socket");
+        exit(1);
+    }
+
+    // this call is what allows broadcast packets to be sent:
+    if (setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcast,
+        sizeof broadcast) == -1) {
+        perror("setsockopt (SO_BROADCAST)");
+        exit(1);
+    }
+
+    their_addr.sin_family = AF_INET;     // host byte order
+    their_addr.sin_port = htons(SERVERPORT); // short, network byte order
+    their_addr.sin_addr = *((struct in_addr *)he->h_addr);
+    memset(their_addr.sin_zero, '\0', sizeof their_addr.sin_zero);
+
+    if ((numbytes=sendto(sockfd, message, strlen(message), 0,
+             (struct sockaddr *)&their_addr, sizeof their_addr)) == -1) {
+        perror("sendto");
+        exit(1);
+    }
+
+    printf("sent %d bytes to %s\n", numbytes,
+        inet_ntoa(their_addr.sin_addr));
+
+    close(sockfd);
+
+    return 0;
 }
 
 int talk(char *ip, char *message)
@@ -86,7 +204,11 @@ int main(void)
    socklen_t addr_len;
    char s[INET6_ADDRSTRLEN];
    struct timeval read_timeout;
+   int txDelay = 0;
+   char *tok1;
+   char *tok2;
 
+   initregs();
    read_timeout.tv_sec = 0;
    read_timeout.tv_usec = 10;
 
@@ -126,10 +248,27 @@ int main(void)
 
    freeaddrinfo(servinfo);
 
-   printf("listener: waiting to recvfrom...\n");
+   //printf("listener: waiting to recvfrom...\n");
 
    while(1)
    {
+      txDelay++;
+      if (txDelay > 128)
+      {
+        broadcast("192.168.0.255","houseinfo");
+        txDelay = 0;
+	// send values
+        for (int i=0; i<NUMIPS; i++)
+        {
+           if (registeredIP[i][0] != 0)
+           {
+              sprintf(buf,"houseinfo %d",rand());
+	      printf("send %s to %s\n",buf,registeredIP[i]);
+              talk(registeredIP[i],buf);
+           }
+        }
+      }
+
       addr_len = sizeof their_addr;
       if ((numbytes = recvfrom(sockfd, buf, MAXBUFLEN-1 , 0,
                   (struct sockaddr *)&their_addr, &addr_len)) == -1) {
@@ -139,18 +278,28 @@ int main(void)
       else
       {
 
-         printf("listener: got packet from %s\n",
-               inet_ntop(their_addr.ss_family,
-                  get_in_addr((struct sockaddr *)&their_addr),
-                  s, sizeof s));
-         printf("listener: packet is %d bytes long\n", numbytes);
+         //printf("listener: got packet from %s\n",
+         //      inet_ntop(their_addr.ss_family,
+         //         get_in_addr((struct sockaddr *)&their_addr),
+         //         s, sizeof s));
+         //printf("listener: packet is %d bytes long\n", numbytes);
          buf[numbytes] = '\0';
-         printf("listener: packet contains \"%s\"\n", buf);
-         if (!strcmp(buf,"HouseInfo"))
+         //printf("klink: packet contains \"%s\"\n", buf);
+         tok1 = strtok(buf," ");
+         tok2 = strtok(NULL," ");
+         if (!strcmp(tok1,"reg") && !strcmp(tok2,"houseinfo"))
          {
-            talk((char *)inet_ntop(their_addr.ss_family,get_in_addr((struct sockaddr *)&their_addr),s, sizeof s),"Register HouseInfo");
+            // maybe we should return a value to see if we could
+            // register this value
+            regs((char *)get_in_addr((struct sockaddr *)&their_addr));
+            //talk((char *)inet_ntop(their_addr.ss_family,get_in_addr((struct sockaddr *)&their_addr),s, sizeof s),(char *)"Register HouseInfo");
+         }
+         else
+         {
+            printf("Command not recognized\n");
          }
       }
+      //printf("look for receive packet again\n");
    }
 
    close(sockfd);
